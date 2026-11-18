@@ -2,7 +2,70 @@
 
 A policy gate for AI agents' tool calls. Agents connect to `mcp-gate` instead of straight to an MCP server; every `tools/call` is checked against policies written in [Cedar](https://www.cedarpolicy.com/) before it reaches the tool.
 
-Status: being built step by step, locally. Not published.
+```text
+Denied by mcp-gate (policy never-scale-prod-to-zero): Scaling a prod deployment to zero replicas takes the service down.
+```
+
+Go 1.27 · official MCP Go SDK · cedar-go · Prometheus · native fuzzing. Personal learning project, built pairing with Claude Code. The "Kubernetes" behind it is a fake in-memory cluster.
+
+## What it does
+
+```mermaid
+flowchart LR
+    A1["agent: oncall-bot"] -- bearer token --> G
+    A2["agent: docs-bot"] -- bearer token --> G
+    subgraph G["mcp-gate"]
+        direction TB
+        P["strict JSON-RPC parse<br/>(refuse anything ambiguous)"] --> C{"tools/call?"}
+        C -- yes --> D["Cedar decision<br/>schema-checked"]
+        C -- tools/list --> F["hide tools the agent<br/>can never call"]
+    end
+    D -- allow --> S["MCP server<br/>(the tools)"]
+    D -- deny --> R["tool error with the reason"]
+    F --> S
+    POL["policies/*.cedar<br/>+ schema"] -. hot reload .-> D
+    G -. one line per decision .-> AU[("audit.jsonl")]
+    G -. counters .-> M["/metrics"]
+```
+
+- **Who:** agents authenticate with bearer tokens; the config stores only their SHA-256 hashes.
+- **What they may do:** Cedar policies over agent, tool, arguments and time. Default deny; a `forbid` always wins.
+- **Type-checked rules:** policies and every request are checked against a Cedar schema. A typo in a policy fails to load; an unexpected argument is denied.
+- **Hard to fool:** duplicate keys, case-folded keys (`Method`, `argumentſ`), header/body mismatches and batches are refused before any decision.
+- **Safe to change:** policy files hot-reload; a broken edit is rejected and the last good set stays in force. `mcp-gate test` runs policy test cases like unit tests.
+
+## Try it
+
+```bash
+go build -o bin/ ./cmd/...
+./bin/demo-server                          # the fake cluster's MCP server on :8090
+./bin/mcp-gate serve -config gate.yaml     # the gate on :8081, metrics on :9091
+./bin/agent -token demo-docs-token tools
+./bin/agent -token demo-oncall-token call scale_deployment '{"namespace":"prod-payments","deployment":"api","replicas":0}'
+./bin/mcp-gate test  -config gate.yaml     # the policy test cases
+./bin/mcp-gate check -config gate.yaml     # who can see which tools
+go test ./...
+```
+
+## The rules in this demo
+
+| Policy | Effect |
+|---|---|
+| `read-tools-for-every-agent` | permit any agent the `read` tools |
+| `sre-changes-outside-prod` | permit SRE agents `write` tools outside `prod-*` |
+| `prod-changes-need-on-call` | permit SRE agents `write` tools in prod only if `on_call` |
+| `never-scale-prod-to-zero` | forbid `scale_deployment` to 0 in prod |
+| `replica-cap` | forbid scaling above 20 |
+| `weekend-prod-freeze` | forbid prod writes on Saturday and Sunday (gate's time zone) |
+| `no-destructive-tools` | forbid the `destructive` group (`delete_namespace`) |
+
+## What it doesn't protect against
+
+- **A reachable tool server.** If agents can reach the MCP server directly, nothing here applies. The server must only be reachable from the gate.
+- **Allowed but harmful calls.** Policies limit what's possible; they don't judge intent. An on-call agent can still restart the wrong deployment.
+- **What tools return.** The gate checks requests, not results. A tool reply carrying a prompt injection or a secret passes through.
+- **Methods it can't check.** `resources/*`, `prompts/*` and `tasks/*` are refused by default. Listing them in `extra_methods` passes them through unchecked.
+- **Stolen tokens.** Tokens are static bearer tokens. A real deployment would use OAuth (MCP's authorization spec) or mTLS.
 
 ## Build log
 
@@ -90,3 +153,30 @@ Then, with the gate still running: adding a policy file let docs-bot restart a d
 The same run showed the gap the gate can't close by itself: the demo server answered `agent` directly on port 8090 with no token. In a real deployment the tool server must only be reachable from the gate (a network policy, or binding it to the gate's private network).
 
 Tests added: policy store reload (good edit, broken edit kept out, same broken file not retried), config validation (7 bad configs), and the shipped policy cases. What broke: nothing; `gofmt` reflowed two files.
+
+### Step 5: fuzzing and benchmarks
+
+Three fuzz targets (Go's built-in coverage-guided fuzzing), each stating a property rather than "doesn't crash":
+
+| Target | Property | Run on this laptop |
+|---|---|---|
+| `FuzzParseAgreesWithLenientParser` | whatever the gate accepts, Go's lenient `encoding/json` v1 (case-insensitive, last duplicate wins) reads the same method, tool and arguments | 746,631 inputs in 2 min, no disagreement |
+| `FuzzSSEPassthrough` | with an identity rewrite, a spec-exact SSE parser reads the same events before and after the filter | **failed in 40 s**, fixed, then 1,814,656 inputs in 2 min, clean |
+| `FuzzAuthorizeCall` | arbitrary argument JSON never panics, and anything allowed has exactly the declared shape with replicas in 0–20 | **failed on a seed**, fixed, then 1,895,251 inputs in 2 min, clean |
+
+What the fuzzers found (both fixed, both now regular test cases):
+1. **Null arguments slipped past the schema.** `{"…","extra": null}` was allowed: the engine dropped nulls (Cedar has no null) before the schema check, while the tool still received `extra`. Now a null is accepted only for an argument the schema declares optional; anything else is denied.
+2. **The SSE filter split lines only on LF.** The SSE spec also ends a line at CRLF and at a lone CR, so for input like `data:\r\r\n\n` the gate and a client saw different events: the same kind of disagreement the strict parser exists to prevent. The filter now splits lines exactly as the spec does, and treats a bare `data` line (no colon) as empty data.
+
+Benchmarks (`go test -bench . -count 3`, Intel i5-10310U laptop on Windows, in-process HTTP over loopback; numbers are noisy, ranges are the three runs):
+
+| What | Time |
+|---|---|
+| Cedar decision, read tool allowed | 8.0–9.0 µs |
+| Cedar decision, write tool allowed / denied by a forbid | 11.4–16.7 µs |
+| Denied by the schema (bad argument type) | 19.2–19.7 µs |
+| `tools/list` visibility check, per tool | 1.9–2.1 µs |
+| One `tools/call`, JSON reply: direct / through the gate | 0.94–1.18 ms / 1.78–2.37 ms |
+| One `tools/call`, SSE reply: direct / through the gate | 1.26–1.73 ms / 1.59–2.54 ms |
+
+So the gate adds roughly 0.5–1 ms per call here, and the policy decision is about 1% of that; the rest is the second HTTP hop and parsing. Next to a model call that takes seconds, it doesn't matter. What these numbers don't show: behaviour under many concurrent agents, or over a real network.

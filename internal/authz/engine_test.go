@@ -83,6 +83,10 @@ func TestDecisions(t *testing.T) {
 			[]string{"read-tools-for-every-agent"}, ""},
 		{"optional argument as null", "docs-bot", "get_logs", `{"namespace":"dev-sandbox","pod":"scratch-0","tail":null}`, weekday, true,
 			[]string{"read-tools-for-every-agent"}, ""},
+		{"undeclared argument as null", "oncall-bot", "scale_deployment", `{"namespace":"staging-payments","deployment":"api","replicas":3,"extra":null}`, weekday, false,
+			nil, "doesn't declare it as optional"},
+		{"required argument as null", "oncall-bot", "scale_deployment", `{"namespace":"staging-payments","deployment":"api","replicas":null}`, weekday, false,
+			nil, "doesn't declare it as optional"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

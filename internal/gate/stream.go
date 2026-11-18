@@ -32,17 +32,55 @@ func (b *sseBody) Close() error {
 
 var errEventTooBig = errors.New("server-sent event is larger than the gate's limit")
 
+// sseLines splits a stream into lines the way the SSE spec does: a line ends
+// at CRLF, LF, or a lone CR. Splitting only on LF (the first version did)
+// lets the gate and the client see different events in the same bytes;
+// fuzzing found that. terminated reports whether the last line had an end.
+func sseLines(terminated *bool) bufio.SplitFunc {
+	return func(data []byte, atEOF bool) (int, []byte, error) {
+		for i, b := range data {
+			switch b {
+			case '\n':
+				*terminated = true
+				return i + 1, data[:i], nil
+			case '\r':
+				if i+1 < len(data) {
+					*terminated = true
+					if data[i+1] == '\n' {
+						return i + 2, data[:i], nil
+					}
+					return i + 1, data[:i], nil
+				}
+				if atEOF {
+					*terminated = true
+					return i + 1, data[:i], nil
+				}
+				return 0, nil, nil // a CR at the end of the buffer: is LF next?
+			}
+		}
+		if atEOF && len(data) > 0 {
+			*terminated = false
+			return len(data), data, nil
+		}
+		return 0, nil, nil
+	}
+}
+
 func filterEvents(src io.Reader, dst io.Writer, maxEvent int64, fn func([]byte) []byte) error {
-	br := bufio.NewReaderSize(src, 64<<10)
+	sc := bufio.NewScanner(src)
+	sc.Buffer(make([]byte, 0, 64<<10), int(min(maxEvent, 1<<30)))
+	var terminated bool
+	sc.Split(sseLines(&terminated))
 	var (
-		fields [][]byte // id:, event:, retry: and comment lines, kept as received
-		data   [][]byte // the values of data: lines
+		fields [][]byte // id:, event:, retry: and comment lines
+		data   [][]byte // the values of data lines
 		size   int64
 	)
-	emit := func(terminated bool) error {
+	emit := func(end bool) error {
 		var buf bytes.Buffer
 		for _, f := range fields {
 			buf.Write(f)
+			buf.WriteByte('\n')
 		}
 		if data != nil {
 			for _, line := range bytes.Split(fn(bytes.Join(data, []byte("\n"))), []byte("\n")) {
@@ -51,45 +89,43 @@ func filterEvents(src io.Reader, dst io.Writer, maxEvent int64, fn func([]byte) 
 				buf.WriteByte('\n')
 			}
 		}
-		if terminated {
+		if end {
 			buf.WriteByte('\n')
 		}
 		fields, data, size = nil, nil, 0
 		_, err := dst.Write(buf.Bytes())
 		return err
 	}
-	for {
-		line, err := br.ReadBytes('\n')
-		if len(line) > 0 {
-			size += int64(len(line))
-			if size > maxEvent {
-				return errEventTooBig
-			}
-			content := bytes.TrimRight(line, "\r\n")
-			switch {
-			case len(content) == 0 && err == nil: // a blank line ends the event
-				if werr := emit(true); werr != nil {
-					return werr
-				}
-			case bytes.HasPrefix(content, []byte("data:")):
-				v := bytes.TrimPrefix(content[len("data:"):], []byte(" "))
-				data = append(data, bytes.Clone(v))
-			default:
-				fields = append(fields, bytes.Clone(line))
-			}
+	for sc.Scan() {
+		line := sc.Bytes()
+		size += int64(len(line)) + 1
+		if size > maxEvent {
+			return errEventTooBig
 		}
-		if err != nil {
-			if fields != nil || data != nil {
-				// An event cut off by the end of the stream. Clients drop
-				// it; pass it on unterminated so they still can.
-				if werr := emit(false); werr != nil {
-					return werr
-				}
+		switch {
+		case len(line) == 0 && terminated: // a blank line ends the event
+			if err := emit(true); err != nil {
+				return err
 			}
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
+		case bytes.Equal(line, []byte("data")): // a field with no colon has an empty value
+			data = append(data, []byte{})
+		case bytes.HasPrefix(line, []byte("data:")):
+			v := bytes.TrimPrefix(line[len("data:"):], []byte(" "))
+			data = append(data, bytes.Clone(v))
+		default:
+			fields = append(fields, bytes.Clone(line))
 		}
 	}
+	if err := sc.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return errEventTooBig
+		}
+		return err
+	}
+	if fields != nil || data != nil {
+		// An event cut off by the end of the stream. Clients drop it; pass
+		// it on unterminated so they still can.
+		return emit(false)
+	}
+	return nil
 }

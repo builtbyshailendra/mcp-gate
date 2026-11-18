@@ -16,11 +16,15 @@ func TestFilterEvents(t *testing.T) {
 	in := ": keep-alive comment\n" +
 		"id: 1\r\nevent: message\r\ndata: {\"a\":1}\r\n\r\n" +
 		"data: line one\ndata:line two\n\n" +
+		"data: lone\rdata: cr\r\r" + // a lone CR ends a line too
+		"data\n\n" + // a field with no colon: empty data
 		"retry: 500\n\n" +
 		"data: cut off"
 	want := ": keep-alive comment\n" +
-		"id: 1\r\nevent: message\r\ndata: {\"A\":1}\n\n" +
+		"id: 1\nevent: message\ndata: {\"A\":1}\n\n" +
 		"data: LINE ONE\ndata: LINE TWO\n\n" +
+		"data: LONE\ndata: CR\n\n" +
+		"data: \n\n" +
 		"retry: 500\n\n" +
 		"data: CUT OFF\n"
 	var out bytes.Buffer

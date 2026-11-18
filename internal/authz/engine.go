@@ -61,6 +61,7 @@ type Engine struct {
 	validator *validate.Validator
 	tools     map[string]bool   // actions that apply to a request (not groups)
 	expected  map[string]string // tool -> its declared arguments, for error messages
+	argTypes  map[string]resolved.RecordType
 	server    cedar.EntityUID
 	ids       []string
 }
@@ -106,11 +107,11 @@ func Load(schemaBody []byte, files []File, agents []Agent, server string) (*Engi
 	if err := s.UnmarshalCedar(schemaBody); err != nil {
 		return nil, fmt.Errorf("schema: %w", err)
 	}
-	resolved, err := s.Resolve()
+	rs, err := s.Resolve()
 	if err != nil {
 		return nil, fmt.Errorf("schema: %w", err)
 	}
-	v := validate.New(resolved)
+	v := validate.New(rs)
 
 	e := &Engine{
 		policies:  cedar.NewPolicySet(),
@@ -120,6 +121,7 @@ func Load(schemaBody []byte, files []File, agents []Agent, server string) (*Engi
 		validator: v,
 		tools:     map[string]bool{},
 		expected:  map[string]string{},
+		argTypes:  map[string]resolved.RecordType{},
 		server:    cedar.NewEntityUID(serverType, cedar.String(server)),
 	}
 
@@ -148,12 +150,15 @@ func Load(schemaBody []byte, files []File, agents []Agent, server string) (*Engi
 
 	// Actions and their groups come from the schema, so `action in
 	// Action::"write"` works without listing the hierarchy twice.
-	for uid, act := range resolved.Actions {
+	for uid, act := range rs.Actions {
 		e.entities[uid] = act.Entity
 		if act.AppliesTo != nil {
 			e.tools[string(uid.ID)] = true
 			if args, ok := act.AppliesTo.Context["args"]; ok {
 				e.expected[string(uid.ID)] = describe(args.Type)
+				if rt, ok := args.Type.(resolved.RecordType); ok {
+					e.argTypes[string(uid.ID)] = rt
+				}
 			}
 		}
 	}
@@ -242,7 +247,7 @@ func (e *Engine) AuthorizeCall(agent, tool string, args json.RawMessage, now tim
 	if !e.tools[tool] {
 		return Decision{Reason: fmt.Sprintf("tool %q is not declared in the gate's schema, so it is denied by default", tool)}
 	}
-	argRec, err := argsRecord(args)
+	argRec, err := argsRecord(args, e.argTypes[tool])
 	if err != nil {
 		return Decision{Reason: fmt.Sprintf("arguments for %s: %v", tool, err)}
 	}
@@ -298,9 +303,11 @@ func (e *Engine) AuthorizeCall(agent, tool string, args json.RawMessage, now tim
 	return d
 }
 
-// argsRecord turns a JSON object into a Cedar record. JSON null means "not
-// given" and is dropped, since Cedar has no null.
-func argsRecord(raw json.RawMessage) (cedar.Record, error) {
+// argsRecord turns a JSON object into a Cedar record. Cedar has no null, so a
+// null is read as "not given", but only for an argument the schema declares
+// as optional. Anywhere else a null is refused: dropping it would hide an
+// argument from the schema check while the tool still receives it.
+func argsRecord(raw json.RawMessage, declared resolved.RecordType) (cedar.Record, error) {
 	if len(bytes.TrimSpace(raw)) == 0 || string(bytes.TrimSpace(raw)) == "null" {
 		return cedar.NewRecord(nil), nil
 	}
@@ -310,11 +317,21 @@ func argsRecord(raw json.RawMessage) (cedar.Record, error) {
 	if err := dec.Decode(&obj); err != nil {
 		return cedar.Record{}, errors.New("arguments must be a JSON object")
 	}
-	v, err := toCedar(obj, 0)
-	if err != nil {
-		return cedar.Record{}, err
+	rm := cedar.RecordMap{}
+	for k, val := range obj {
+		if val == nil {
+			if attr, ok := declared[cedar.String(k)]; ok && attr.Optional {
+				continue
+			}
+			return cedar.Record{}, fmt.Errorf("argument %q is null, and the schema doesn't declare it as optional", k)
+		}
+		cv, err := toCedar(val, 1)
+		if err != nil {
+			return cedar.Record{}, err
+		}
+		rm[cedar.String(k)] = cv
 	}
-	return v.(cedar.Record), nil
+	return cedar.NewRecord(rm), nil
 }
 
 const maxDepth = 32
@@ -348,7 +365,7 @@ func toCedar(v any, depth int) (cedar.Value, error) {
 		rm := cedar.RecordMap{}
 		for k, val := range x {
 			if val == nil {
-				continue
+				return nil, fmt.Errorf("null inside argument object %q is not supported", k)
 			}
 			cv, err := toCedar(val, depth+1)
 			if err != nil {
