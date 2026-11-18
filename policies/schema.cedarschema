@@ -1,0 +1,59 @@
+// The gate's view of the world, in Cedar's schema language.
+//
+// Every policy is type-checked against this file when it loads, and every
+// request is checked against it before it's authorized. A policy that reads
+// `context.args.namespce` (typo) is rejected at load time; a tool call whose
+// arguments don't match its declaration is denied.
+
+// Who is asking: agents, grouped into teams.
+entity Team;
+entity Agent in [Team] {
+  on_call: Bool,
+};
+
+// What is being protected: the upstream MCP server.
+entity Server;
+
+type Clock = {
+  hour: Long,     // 0-23, in the gate's time zone
+  weekday: Long,  // 0 = Sunday ... 6 = Saturday
+};
+
+// Risk groups. Which group a tool is in is the gate operator's decision.
+// The upstream server's own hints (readOnlyHint, destructiveHint) are ignored:
+// a server can claim anything about itself.
+action read;
+action write;
+action destructive;
+
+// One action per tool, named exactly like the MCP tool. A tool the upstream
+// offers but this file doesn't declare is hidden and denied.
+action list_pods in [read] appliesTo {
+  principal: Agent,
+  resource: Server,
+  context: { clock: Clock, args: { namespace: String } },
+};
+
+action get_logs in [read] appliesTo {
+  principal: Agent,
+  resource: Server,
+  context: { clock: Clock, args: { namespace: String, pod: String, tail?: Long } },
+};
+
+action restart_deployment in [write] appliesTo {
+  principal: Agent,
+  resource: Server,
+  context: { clock: Clock, args: { namespace: String, deployment: String } },
+};
+
+action scale_deployment in [write] appliesTo {
+  principal: Agent,
+  resource: Server,
+  context: { clock: Clock, args: { namespace: String, deployment: String, replicas: Long } },
+};
+
+action delete_namespace in [destructive] appliesTo {
+  principal: Agent,
+  resource: Server,
+  context: { clock: Clock, args: { namespace: String } },
+};
