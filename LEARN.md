@@ -81,7 +81,7 @@ Answer out loud, then check against the code.
 4. The weekend-freeze case at "Friday 23:30 in India" passes, though it's Friday 18:00 UTC. Why does the time zone matter, and where is it set?
 5. How does `tools/list` filtering decide what an agent sees? Why is it allowed to be approximate?
 6. Give three ways to make two JSON parsers disagree, and say what the gate does about each.
-7. What did the fuzz test find in Step 5, and why was the original behaviour unsafe?
+7. What did the two fuzz failures in Step 5 find, and why was each original behaviour unsafe?
 8. A policy file with a typo is saved while the gate is running. What happens, and how would you notice?
 9. Why does the gate strip the agent's `Authorization` header before forwarding?
 10. What can't the gate protect against? (Name at least two.)

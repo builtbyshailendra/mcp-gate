@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: vet
+        run: go vet ./...
+      - name: tests (race detector on)
+        run: go test -race -count=1 ./...
+      - name: policy test cases
+        run: go run ./cmd/mcp-gate test -config gate.yaml
+      - name: fuzz, 30 s per target
+        run: |
+          go test -run '^$' -fuzz '^FuzzParseAgreesWithLenientParser$' -fuzztime 30s ./internal/gate
+          go test -run '^$' -fuzz '^FuzzSSEPassthrough$' -fuzztime 30s ./internal/gate
+          go test -run '^$' -fuzz '^FuzzAuthorizeCall$' -fuzztime 30s ./internal/authz
+      - name: smoke test with the real binaries
+        run: bash scripts/smoke.sh

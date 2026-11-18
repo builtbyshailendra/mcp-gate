@@ -67,6 +67,21 @@ go test ./...
 - **Methods it can't check.** `resources/*`, `prompts/*` and `tasks/*` are refused by default. Listing them in `extra_methods` passes them through unchecked.
 - **Stolen tokens.** Tokens are static bearer tokens. A real deployment would use OAuth (MCP's authorization spec) or mTLS.
 
+## Project layout
+
+| Path | What |
+|---|---|
+| `cmd/mcp-gate` | the gate: `serve`, `test`, `check`, `hash-token` |
+| `cmd/demo-server` | the fake cluster's MCP server |
+| `cmd/agent` | a small MCP client that plays the agent |
+| `internal/gate` | HTTP handling, strict parsing, SSE filter, metrics |
+| `internal/authz` | Cedar engine, schema checks, hot-reload store |
+| `internal/policytest` | policy test runner |
+| `internal/config`, `internal/audit`, `internal/demo` | config, audit log, fake cluster |
+| `policies/` | `schema.cedarschema`, the `.cedar` policies, `tests.yaml` |
+| `scripts/smoke.sh` | starts the real binaries and checks nine answers |
+| `LEARN.md` | the ideas behind it, questions to answer without notes, exercises |
+
 ## Build log
 
 ### Step 1: a demo MCP server to protect
@@ -180,3 +195,11 @@ Benchmarks (`go test -bench . -count 3`, Intel i5-10310U laptop on Windows, in-p
 | One `tools/call`, SSE reply: direct / through the gate | 1.26–1.73 ms / 1.59–2.54 ms |
 
 So the gate adds roughly 0.5–1 ms per call here, and the policy decision is about 1% of that; the rest is the second HTTP hop and parsing. Next to a model call that takes seconds, it doesn't matter. What these numbers don't show: behaviour under many concurrent agents, or over a real network.
+
+### Step 6: smoke test, CI workflow, learning notes
+
+- `scripts/smoke.sh` builds the binaries, starts the demo server and the gate as separate processes, and checks nine answers through `agent`, `/metrics` and the audit log. It passes on this laptop (Git Bash on Windows).
+- `.github/workflows/ci.yml`: gofmt, vet, tests with the race detector, the policy cases, 30 s per fuzz target, and the smoke test. **It has not run**: the project isn't published. The race detector needs cgo, which this laptop doesn't have, so `-race` has only been specified, not tried.
+- `LEARN.md`: MCP, Cedar and the Go features used, the security ideas, 12 questions to answer without notes, and 4 exercises.
+
+Where it stands: 6 local commits, every test passing (`go test ./...`), 14/14 policy cases, smoke test passing. Not published.
