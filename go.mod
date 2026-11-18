@@ -6,6 +6,7 @@ require (
 	github.com/cedar-policy/cedar-go v1.9.2
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/prometheus/client_golang v1.25.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

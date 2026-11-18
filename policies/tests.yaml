@@ -1,0 +1,119 @@
+# Policy tests. Run them with:  go run ./cmd/mcp-gate test -config gate.yaml
+#
+# Each case is one tool call and what the policies must do with it. A policy
+# change that breaks a case fails CI, the same way a code change that breaks
+# a unit test does. 18 Nov 2026 is a Wednesday; 21 Nov 2026 is a Saturday.
+
+cases:
+  - name: every agent can read
+    agent: docs-bot
+    tool: list_pods
+    args: {namespace: prod-payments}
+    at: 2026-11-18T11:00:00+05:30
+    expect: allow
+    policies: [read-tools-for-every-agent]
+    visible: true
+
+  - name: support agents can't change anything, and don't see the tools
+    agent: docs-bot
+    tool: restart_deployment
+    args: {namespace: dev-sandbox, deployment: scratch}
+    at: 2026-11-18T11:00:00+05:30
+    expect: deny
+    policies: []
+    visible: false
+
+  - name: SRE agents change staging
+    agent: helper-bot
+    tool: scale_deployment
+    args: {namespace: staging-payments, deployment: api, replicas: 3}
+    at: 2026-11-18T11:00:00+05:30
+    expect: allow
+    policies: [sre-changes-outside-prod]
+    visible: true
+
+  - name: prod needs an on-call agent
+    agent: helper-bot
+    tool: restart_deployment
+    args: {namespace: prod-payments, deployment: api}
+    at: 2026-11-18T11:00:00+05:30
+    expect: deny
+    policies: []
+
+  - name: the on-call agent restarts prod on a weekday
+    agent: oncall-bot
+    tool: restart_deployment
+    args: {namespace: prod-payments, deployment: api}
+    at: 2026-11-18T11:00:00+05:30
+    expect: allow
+    policies: [prod-changes-need-on-call]
+
+  - name: weekend freeze applies even to the on-call agent
+    agent: oncall-bot
+    tool: restart_deployment
+    args: {namespace: prod-checkout, deployment: web}
+    at: 2026-11-21T11:00:00+05:30
+    expect: deny
+    policies: [weekend-prod-freeze]
+
+  - name: Friday 23:30 in India is still a weekday for the freeze
+    agent: oncall-bot
+    tool: restart_deployment
+    args: {namespace: prod-checkout, deployment: web}
+    at: 2026-11-20T18:00:00Z
+    expect: allow
+    policies: [prod-changes-need-on-call]
+
+  - name: never scale prod to zero
+    agent: oncall-bot
+    tool: scale_deployment
+    args: {namespace: prod-payments, deployment: api, replicas: 0}
+    at: 2026-11-18T11:00:00+05:30
+    expect: deny
+    policies: [never-scale-prod-to-zero]
+
+  - name: scaling staging to zero is allowed
+    agent: oncall-bot
+    tool: scale_deployment
+    args: {namespace: staging-payments, deployment: api, replicas: 0}
+    at: 2026-11-18T11:00:00+05:30
+    expect: allow
+
+  - name: replica cap
+    agent: oncall-bot
+    tool: scale_deployment
+    args: {namespace: staging-payments, deployment: api, replicas: 21}
+    at: 2026-11-18T11:00:00+05:30
+    expect: deny
+    policies: [replica-cap]
+
+  - name: exactly 20 replicas is fine
+    agent: oncall-bot
+    tool: scale_deployment
+    args: {namespace: staging-payments, deployment: api, replicas: 20}
+    at: 2026-11-18T11:00:00+05:30
+    expect: allow
+
+  - name: destructive tools never pass, and nobody sees them
+    agent: oncall-bot
+    tool: delete_namespace
+    args: {namespace: dev-sandbox}
+    at: 2026-11-18T11:00:00+05:30
+    expect: deny
+    policies: [no-destructive-tools]
+    visible: false
+
+  - name: a tool the schema doesn't declare is denied
+    agent: oncall-bot
+    tool: exec_shell
+    args: {command: "kubectl get secrets -A"}
+    at: 2026-11-18T11:00:00+05:30
+    expect: deny
+    visible: false
+
+  - name: an argument the schema doesn't declare is denied
+    agent: oncall-bot
+    tool: restart_deployment
+    args: {namespace: staging-payments, deployment: api, force: true}
+    at: 2026-11-18T11:00:00+05:30
+    expect: deny

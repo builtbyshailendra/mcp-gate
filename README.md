@@ -64,3 +64,29 @@ Tests (24, all on real SDK clients or raw HTTP, no mocks of the gate):
 - an unknown token, the upstream being down (502, audited), the filter on edge cases, and the SSE filter's streaming behaviour
 
 What broke: nothing in the tests on the first full run. `go vet` first failed because `go mod tidy` in Step 1 had dropped modules that later code needed.
+
+### Step 4: a program you can run
+
+- `cmd/mcp-gate`: `serve`, `test`, `check`, `hash-token`. Agents connect on `127.0.0.1:8081/mcp`; `/metrics` and `/healthz` are on a separate admin port (`127.0.0.1:9091`) that agents aren't given.
+- `gate.yaml`: strict YAML (a misspelt key is an error), agents listed with token *hashes*.
+- **Hot reload** (`authz.Store`): the policy folder is polled every 2 s. A good change is swapped in atomically. A change that doesn't parse or type-check is logged, counted (`mcpgate_policy_reloads_total{result="failed"}`) and ignored: the gate keeps enforcing the previous set. Polling, not file events, because it behaves the same on Windows, Linux and a Kubernetes ConfigMap mount.
+- **Policy tests** (`policies/tests.yaml`, run with `mcp-gate test`): 14 cases written for people, each naming the agent, tool, arguments, time, expected decision and, where it matters, the policy that must decide it and whether the tool is visible. One checks that 23:30 on a Friday in India is still a weekday for the weekend freeze, though it's Friday 18:00 in UTC.
+- `cmd/agent`: a small MCP client that plays the agent, for trying the gate by hand.
+
+Run on this laptop with the real binaries (`demo-server`, `mcp-gate serve`, then `agent`):
+
+| Agent | Call | Result |
+|---|---|---|
+| docs-bot | `tools` | sees `get_logs`, `list_pods` only |
+| docs-bot | `scale_deployment` staging | `Denied by mcp-gate: no policy permits agent "docs-bot" … (default deny)` |
+| oncall-bot | `scale_deployment` prod-payments to 5 | `scaled prod-payments/api from 3 to 5` |
+| oncall-bot | `scale_deployment` prod-payments to 0 | `Denied by mcp-gate (policy never-scale-prod-to-zero): …` |
+| oncall-bot | `delete_namespace` | `Denied by mcp-gate (policy no-destructive-tools): …` |
+| docs-bot, protocol 2025-11-25 | `list_pods` | works (shows the 5 pods from the scale above) |
+| wrong token | `tools` | `Unauthorized` |
+
+Then, with the gate still running: adding a policy file let docs-bot restart a dev deployment within 2 s; breaking that file (`namespce`) was rejected with the typo named and the previous rules kept working; deleting the file took the permission away again.
+
+The same run showed the gap the gate can't close by itself: the demo server answered `agent` directly on port 8090 with no token. In a real deployment the tool server must only be reachable from the gate (a network policy, or binding it to the gate's private network).
+
+Tests added: policy store reload (good edit, broken edit kept out, same broken file not retried), config validation (7 bad configs), and the shipped policy cases. What broke: nothing; `gofmt` reflowed two files.

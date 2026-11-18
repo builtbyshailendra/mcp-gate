@@ -1,0 +1,39 @@
+# mcp-gate config for the local demo.
+#
+# The three tokens are demo values for the fake cluster, published here on
+# purpose: demo-oncall-token, demo-helper-token, demo-docs-token. Real
+# deployments put only hashes in config (mcp-gate hash-token <token>) and keep
+# the tokens in a secret store.
+
+listen: 127.0.0.1:8081        # agents connect to http://127.0.0.1:8081/mcp
+admin_listen: 127.0.0.1:9091  # /metrics and /healthz, not exposed to agents
+
+upstream:
+  name: k8s                   # becomes Server::"k8s" in Cedar
+  url: http://127.0.0.1:8090/mcp
+
+policies:
+  dir: policies               # schema.cedarschema + *.cedar, reloaded on change
+  reload_every: 2s
+
+time_zone: Asia/Kolkata       # for context.clock (weekend freeze)
+max_body_bytes: 1048576
+audit_log: audit.jsonl
+
+# Methods passed through without a policy check. Empty: only lifecycle,
+# tools/list and tools/call (checked) get through.
+extra_methods: []
+
+agents:
+  - id: oncall-bot
+    teams: [sre]
+    on_call: true
+    token_sha256: 207adcf67f95065adb33a50b488cf7d7bcff7c63704543046cb84ac98242558d
+  - id: helper-bot
+    teams: [sre]
+    on_call: false
+    token_sha256: 0a97e938ab4bc50f189121a5f0e169be9e94158be2cd82ec418e0b826eecf268
+  - id: docs-bot
+    teams: [support]
+    on_call: false
+    token_sha256: e13571554578a130873fc71993ea10ca4d286138e48a08c044cd4cf538b6ad2e
