@@ -1,5 +1,7 @@
 # mcp-gate
 
+[![ci](https://github.com/builtbyshailendra/mcp-gate/actions/workflows/ci.yml/badge.svg)](https://github.com/builtbyshailendra/mcp-gate/actions/workflows/ci.yml)
+
 A policy gate for AI agents' tool calls. Agents connect to `mcp-gate` instead of straight to an MCP server; every `tools/call` is checked against policies written in [Cedar](https://www.cedarpolicy.com/) before it reaches the tool.
 
 ```text
@@ -199,7 +201,7 @@ So the gate adds roughly 0.5–1 ms per call here, and the policy decision is ab
 ### Step 6: smoke test, CI workflow, learning notes
 
 - `scripts/smoke.sh` builds the binaries, starts the demo server and the gate as separate processes, and checks nine answers through `agent`, `/metrics` and the audit log. It passes on this laptop (Git Bash on Windows).
-- `.github/workflows/ci.yml`: gofmt, vet, tests with the race detector, the policy cases, 30 s per fuzz target, and the smoke test. **It has not run**: the project isn't published. The race detector needs cgo, which this laptop doesn't have, so `-race` has only been specified, not tried.
+- `.github/workflows/ci.yml`: gofmt, vet, tests with the race detector, the policy cases, 30 s per fuzz target, and the smoke test. It runs on every push (badge above). The race detector needs cgo, which the laptop doesn't have, so `-race` runs only in CI.
 - `LEARN.md`: MCP, Cedar and the Go features used, the security ideas, 12 questions to answer without notes, and 4 exercises.
 
-Where it stands: 6 local commits, every test passing (`go test ./...`), 14/14 policy cases, smoke test passing. Not published.
+Where it stands: every test passing (`go test ./...`), 14/14 policy cases, smoke test passing, locally and in CI. Published 20 Nov 2026.
